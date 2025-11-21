@@ -236,18 +236,21 @@ class _CryptoLabScreenState extends State<CryptoLabScreen> {
     });
   }
 
-  List<int> _parseStringToList(String content) {
+// Helper Baru V2.0: Decode Wallet Address (Base58) ke Bytes
+  List<int> _decodeWalletAddress(String walletString) {
     try {
-      String clean = content.replaceAll('[', '').replaceAll(']', '');
-      if (clean.trim().isEmpty) return [];
-      return clean.split(',').map((e) => int.tryParse(e.trim()) ?? 0).toList();
+      // Kita panggil fungsi helper yang sudah kita buat di KeyManager tadi
+      // Atau panggil langsung dari bs58 kalau mau import di sini.
+      // Supaya rapi, kita pakai instance keyManager:
+      return keyManager.decodeWalletAddress(walletString);
     } catch (e) {
+      print("Error decoding address: $e");
       return [];
     }
   }
 
   Future<PublicKey> _strToPubKey(String str) async {
-    List<int> bytes = _parseStringToList(str);
+    List<int> bytes = _decodeWalletAddress(str);
     return SimplePublicKey(bytes, type: KeyPairType.x25519);
   }
 
@@ -299,7 +302,7 @@ class _CryptoLabScreenState extends State<CryptoLabScreen> {
                       return FutureBuilder<String>(
                         future: Future(() async {
                           if (myIdentity == null) return "Locked";
-                          List<int> bytes = _parseStringToList(msg.content);
+                          List<int> bytes = _decodeWalletAddress(msg.content);
                           try {
                             PublicKey senderKey;
                             if (msg.isMe) {

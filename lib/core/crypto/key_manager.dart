@@ -1,21 +1,30 @@
 import 'package:cryptography/cryptography.dart';
+import 'package:bs58/bs58.dart';
+import 'dart:typed_data'; // <--- WAJIB DITAMBAHKAN (Untuk Uint8List)
 
 class KeyManager {
-  // Kita pilih algoritma X25519 (Standar emas untuk pertukaran kunci di HP)
   final algorithm = X25519();
 
-  // Fungsi untuk membuat identitas baru (Private & Public Key)
+  // Generate Identitas Baru
   Future<SimpleKeyPair> generateNewIdentity() async {
-    // 1. Generate Key Pair secara acak dan aman
     final keyPair = await algorithm.newKeyPair();
-
     return keyPair;
   }
 
-  // Helper: Mengubah Public Key menjadi String (Base64) agar bisa dilihat mata
+  // FUNGSI BARU: Mengubah Public Key jadi String Cantik (Base58)
   Future<String> getPublicKeyString(SimpleKeyPair keyPair) async {
     final publicKey = await keyPair.extractPublicKey();
-    // Kita ambil bytes-nya saja untuk ditampilkan
-    return publicKey.bytes.toString();
+
+    // --- PERBAIKAN DI SINI ---
+    // Kita ubah List<int> menjadi Uint8List agar bs58 mau menerimanya
+    final bytes = Uint8List.fromList(publicKey.bytes);
+
+    return base58.encode(bytes);
+  }
+
+  // HELPER: Mengembalikan String Base58 ke List Angka (untuk Dekripsi)
+  List<int> decodeWalletAddress(String walletAddress) {
+    // .toList() mengubah Uint8List kembali menjadi List<int> standar
+    return base58.decode(walletAddress).toList();
   }
 }
