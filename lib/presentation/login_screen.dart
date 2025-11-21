@@ -1,13 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // Untuk vibrate & exit
-import '../data/local/database_service.dart'; // Untuk Panic Wipe
-import '../core/crypto/storage_service.dart'; // Untuk Panic Wipe
-import 'dummy_screen.dart'; // Layar Palsu
+import 'package:math_expressions/math_expressions.dart';
+import '../data/local/database_service.dart';
+import '../core/crypto/storage_service.dart';
+import 'dummy_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  // Kita butuh widget ChatScreen asli dioper ke sini
   final Widget realApp;
-
   const LoginScreen({super.key, required this.realApp});
 
   @override
@@ -15,9 +13,9 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  String enteredPin = "";
+  String _input = "";
+  String _result = "0";
 
-  // Variabel untuk menampung PIN dari database lokal
   String? savedMaster;
   String? savedGhost;
   String? savedPanic;
@@ -30,7 +28,6 @@ class _LoginScreenState extends State<LoginScreen> {
     _loadPins();
   }
 
-  // Ambil PIN dari Brankas saat layar login dibuka
   Future<void> _loadPins() async {
     final pins = await _storage.getPins();
     if (pins != null) {
@@ -39,85 +36,94 @@ class _LoginScreenState extends State<LoginScreen> {
         savedGhost = pins['ghost'];
         savedPanic = pins['panic'];
       });
+      print("✅ PINS LOADED: Master=$savedMaster"); // Debug Log
+    } else {
+      print("⚠️ NO PINS FOUND IN STORAGE"); // Debug Log
     }
   }
 
-  // Fungsi saat tombol angka ditekan
-  void _onKeyPressed(String value) {
-    if (enteredPin.length < 6) {
-      setState(() {
-        enteredPin += value;
-      });
-      HapticFeedback.lightImpact(); // Getar halus saat ketik
-    }
-
-    // Cek otomatis jika sudah 6 digit
-    if (enteredPin.length == 6) {
-      _checkPin();
-    }
+  void _onBtnTap(String val) {
+    setState(() {
+      if (val == "AC") {
+        _input = "";
+        _result = "0";
+      } else if (val == "⌫") {
+        if (_input.isNotEmpty) {
+          _input = _input.substring(0, _input.length - 1);
+        }
+      } else if (val == "=") {
+        _checkInput();
+      } else {
+        _input += val;
+      }
+    });
   }
 
-  void _delete() {
-    if (enteredPin.isNotEmpty) {
-      setState(() {
-        enteredPin = enteredPin.substring(0, enteredPin.length - 1);
-      });
-      HapticFeedback.lightImpact();
-    }
-  }
+  Future<void> _checkInput() async {
+    // 1. DEBUG: Lihat apa yang diketik vs apa yang disimpan
+    print("Checking Input: '$_input'");
+    print("vs Saved Master: '$savedMaster'");
 
-  // LOGIKA PENGECEKAN PIN
-  Future<void> _checkPin() async {
-    // Delay sedikit biar user lihat titik terakhir terisi
-    await Future.delayed(const Duration(milliseconds: 150));
-
-    // Pastikan PIN sudah termuat dari storage
+    // 2. Jika PIN belum termuat, coba muat lagi sekarang (Fix Masalah Loading)
     if (savedMaster == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text("Error: PINs not loaded. Restart App."),
-            backgroundColor: Colors.red),
-      );
+      await _loadPins();
+      if (savedMaster == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+              content:
+                  Text("Error: Storage Locked/Empty. Try Restarting App.")),
+        );
+        return;
+      }
+    }
+
+    // 3. Cek Login
+    if (_input == savedMaster) {
+      print("🔓 MASTER UNLOCKED");
+      _navigate(widget.realApp);
+      return;
+    } else if (_input == savedGhost) {
+      print("👻 GHOST MODE");
+      _navigate(const DummyScreen());
+      return;
+    } else if (_input == savedPanic) {
+      print("💣 PANIC MODE");
+      await _performSelfDestruct();
+      _navigate(const DummyScreen());
       return;
     }
 
-    // Bandingkan input dengan data Storage
-    if (enteredPin == savedMaster) {
-      // 1. PIN ASLI -> Masuk SilentMesh
-      _navigate(widget.realApp);
-    } else if (enteredPin == savedGhost) {
-      // 2. PIN PALSU -> Masuk Notes Biasa
-      _navigate(const DummyScreen());
-    } else if (enteredPin == savedPanic) {
-      // 3. PANIC -> HAPUS DATA + Masuk Notes Biasa
-      await _performSelfDestruct();
-      _navigate(const DummyScreen());
-    } else {
-      // Salah Password
-      // Getar Panjang (Error)
-      HapticFeedback.heavyImpact();
+    // 4. Kalau bukan PIN, Hitung Matematika
+    try {
+      Parser p = Parser();
+      String mathInput = _input.replaceAll('x', '*');
+      Expression exp = p.parse(mathInput);
+      ContextModel cm = ContextModel();
+      double eval = exp.evaluate(EvaluationType.REAL, cm);
 
-      // Animasi Reset (Clear)
       setState(() {
-        enteredPin = "";
+        _result = eval.toString();
+        if (_result.endsWith(".0")) {
+          _result = _result.substring(0, _result.length - 2);
+        }
+        _input = _result;
+        _result = "";
       });
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Incorrect PIN"),
-          backgroundColor: Colors.red,
-          duration: Duration(milliseconds: 500),
-        ),
-      );
+    } catch (e) {
+      setState(() {
+        _result = "Error";
+      });
     }
   }
 
   Future<void> _performSelfDestruct() async {
     await DatabaseService().nukeDatabase();
     await StorageService().wipeData();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("System Cache Cleared.")),
-    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Memory Reset.")),
+      );
+    }
   }
 
   void _navigate(Widget screen) {
@@ -130,108 +136,96 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      body: SafeArea(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.lock_outline, size: 60, color: Colors.grey),
-            const SizedBox(height: 20),
-            const Text("ENTER PASSCODE",
-                style: TextStyle(
-                    color: Colors.grey, letterSpacing: 2, fontSize: 16)),
-            const SizedBox(height: 40),
-
-            // --- INDIKATOR PIN (DIPERBAIKI) ---
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(6, (index) {
-                // Logic: Apakah digit ke-index ini sudah diisi?
-                bool isFilled = index < enteredPin.length;
-
-                return AnimatedContainer(
-                  duration: const Duration(milliseconds: 200),
-                  margin: const EdgeInsets.symmetric(horizontal: 10),
-                  width: 18,
-                  height: 18,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    // Kalau terisi: Hijau Penuh. Kalau kosong: Transparan
-                    color: isFilled ? Colors.greenAccent : Colors.transparent,
-                    // Kalau terisi: Border Hijau. Kalau kosong: Border Abu
-                    border: Border.all(
-                      color: isFilled
-                          ? Colors.greenAccent
-                          : Colors.grey.withOpacity(0.5),
-                      width: 2,
-                    ),
-                    boxShadow: isFilled
-                        ? [
-                            BoxShadow(
-                                color: Colors.greenAccent.withOpacity(0.4),
-                                blurRadius: 10,
-                                spreadRadius: 2)
-                          ]
-                        : [],
-                  ),
-                );
-              }),
+      backgroundColor: Colors.black,
+      body: Column(
+        children: [
+          Expanded(
+            flex: 1,
+            child: Container(
+              alignment: Alignment.bottomRight,
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(_input,
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 32)),
+                  const SizedBox(height: 10),
+                  Text(_result,
+                      style: TextStyle(color: Colors.grey[400], fontSize: 24)),
+                ],
+              ),
             ),
-            const SizedBox(height: 60),
-
-            // Keypad Angka
-            _buildKeypad(),
-          ],
-        ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: const BoxDecoration(
+                  color: Color(0xFF1C1C1C),
+                  borderRadius:
+                      BorderRadius.vertical(top: Radius.circular(30))),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _row(['AC', '⌫', '%', '/'], Colors.cyanAccent, isOp: true),
+                  _row(['7', '8', '9', 'x'], Colors.white),
+                  _row(['4', '5', '6', '-'], Colors.white),
+                  _row(['1', '2', '3', '+'], Colors.white),
+                  _row(['0', '.', '='], Colors.white, isLast: true),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildKeypad() {
-    return Column(
-      children: [
-        _buildRow(["1", "2", "3"]),
-        _buildRow(["4", "5", "6"]),
-        _buildRow(["7", "8", "9"]),
-        _buildRow(["", "0", "DEL"]),
-      ],
+  Widget _row(List<String> keys, Color color,
+      {bool isOp = false, bool isLast = false}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      children: keys.map((key) {
+        if (isLast && key == '0') {
+          return _calcButton(key, color, width: 160);
+        }
+        return _calcButton(
+            key,
+            (isOp || ['/', 'x', '-', '+', '='].contains(key))
+                ? Colors.orange
+                : color);
+      }).toList(),
     );
   }
 
-  Widget _buildRow(List<String> keys) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: keys.map((key) {
-          if (key.isEmpty) return const SizedBox(width: 75); // Spacer kosong
-          return _buildButton(key);
-        }).toList(),
-      ),
-    );
-  }
-
-  Widget _buildButton(String text) {
+  Widget _calcButton(String text, Color color, {double width = 70}) {
     return InkWell(
-      onTap: () => text == "DEL" ? _delete() : _onKeyPressed(text),
-      customBorder: const CircleBorder(),
+      onTap: () => _onBtnTap(text),
+      borderRadius: BorderRadius.circular(40),
       child: Container(
-        width: 75,
-        height: 75,
+        width: width,
+        height: 70,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: Colors.grey.withOpacity(0.1),
-          border: Border.all(color: Colors.white10), // Border tipis di tombol
+            color: Colors.grey[900],
+            borderRadius: BorderRadius.circular(40),
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withOpacity(0.5),
+                  offset: const Offset(2, 2),
+                  blurRadius: 4),
+              BoxShadow(
+                  color: Colors.grey[800]!,
+                  offset: const Offset(-2, -2),
+                  blurRadius: 4),
+            ]),
+        child: Text(
+          text,
+          style: TextStyle(
+              color: color, fontSize: 28, fontWeight: FontWeight.bold),
         ),
-        child: text == "DEL"
-            ? const Icon(Icons.backspace_outlined,
-                color: Colors.white, size: 24)
-            : Text(text,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 28,
-                    fontWeight: FontWeight.w300)), // Font lebih tipis & elegan
       ),
     );
   }
