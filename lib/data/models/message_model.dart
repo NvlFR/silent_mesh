@@ -1,13 +1,15 @@
 class MessageModel {
-  final String? id; // ID Unik pesan
-  final String senderId; // Siapa pengirimnya (Public Key hash)
-  final String content; // Isi pesan (Bisa teks asli atau terenkripsi)
-  final int timestamp; // Kapan dikirim
-  final String nonce; // "Garam" enkripsi (Wajib disimpan untuk decrypt)
-  final bool isMe; // Apakah ini pesan kita sendiri?
+  final String? id;
+  final String chatId; // <--- KOLOM BARU (Kunci Lawan Bicara)
+  final String senderId; // Pengirim asli (Bisa 'Me' atau Key Teman)
+  final String content;
+  final int timestamp;
+  final String nonce;
+  final bool isMe;
 
   MessageModel({
     this.id,
+    required this.chatId, // Wajib diisi
     required this.senderId,
     required this.content,
     required this.timestamp,
@@ -15,21 +17,21 @@ class MessageModel {
     required this.isMe,
   });
 
-  // Konversi dari Database (Map) ke Object Dart
   factory MessageModel.fromMap(Map<String, dynamic> map) {
     return MessageModel(
       id: map['id'].toString(),
+      chatId: map['chat_id'] ?? 'unknown', // Baca kolom baru
       senderId: map['sender_id'],
-      content: map['content'], // Nanti ini isinya ciphertext
+      content: map['content'],
       timestamp: map['timestamp'],
       nonce: map['nonce'],
-      isMe: map['is_me'] == 1, // Di SQL, boolean disimpan sebagai 1 atau 0
+      isMe: map['is_me'] == 1,
     );
   }
 
-  // Konversi dari Object Dart ke Database (Map)
   Map<String, dynamic> toMap() {
     return {
+      'chat_id': chatId, // Simpan kolom baru
       'sender_id': senderId,
       'content': content,
       'timestamp': timestamp,

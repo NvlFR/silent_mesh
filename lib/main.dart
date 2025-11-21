@@ -1,16 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'dart:math'; // Untuk random warna
 import 'core/security/integrity_service.dart';
+
+// Import Library Kripto & Data
 import 'package:cryptography/cryptography.dart';
 import 'core/crypto/key_manager.dart';
-import 'core/crypto/cipher_service.dart';
 import 'core/crypto/storage_service.dart';
 import 'data/local/database_service.dart';
 import 'data/models/message_model.dart';
+import 'data/models/contact_model.dart'; // Model Kontak
+
+// Import Layar
 import 'presentation/connect_screen.dart';
 import 'presentation/login_screen.dart';
-// GANTI SERVICE JARINGAN
-import 'core/transport/webrtc_service.dart';
+import 'presentation/chat_screen.dart'; // Layar Chat Khusus
+
+// Import Jaringan (Pilih salah satu: P2PService atau WebRTCService)
+// Di sini saya pakai P2PService sesuai file terakhirmu,
+// tapi logic-nya siap untuk WebRTC juga.
+import 'core/transport/p2p_service.dart';
+// import 'core/transport/webrtc_service.dart'; // Aktifkan ini jika mau pakai WebRTC
 
 void main() {
   runApp(const MaterialApp(
@@ -19,7 +29,7 @@ void main() {
   ));
 }
 
-// --- 1. GATEKEEPER ---
+// --- 1. GATEKEEPER (SATPAM) ---
 class GatekeeperScreen extends StatefulWidget {
   const GatekeeperScreen({super.key});
   @override
@@ -40,13 +50,15 @@ class _GatekeeperScreenState extends State<GatekeeperScreen> {
   Future<void> _performSecuritySweep() async {
     await Future.delayed(const Duration(seconds: 2));
     final threat = await integrityService.checkSystemIntegrity();
+
     if (threat.isEmpty) {
       if (mounted) {
+        // Masuk ke Login -> Arahkan ke HomeScreen
         Navigator.pushReplacement(
             context,
             MaterialPageRoute(
                 builder: (context) =>
-                    LoginScreen(realApp: const CryptoLabScreen())));
+                    LoginScreen(realApp: const HomeScreen())));
       }
     } else {
       setState(() {
@@ -68,60 +80,78 @@ class _GatekeeperScreenState extends State<GatekeeperScreen> {
   }
 }
 
-// --- 2. CRYPTO LAB (WEBRTC EDITION) ---
-class CryptoLabScreen extends StatefulWidget {
-  const CryptoLabScreen({super.key});
+// --- 2. HOME SCREEN (DAFTAR KONTAK) ---
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
   @override
-  State<CryptoLabScreen> createState() => _CryptoLabScreenState();
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _CryptoLabScreenState extends State<CryptoLabScreen> {
-  final keyManager = KeyManager();
-  final cipherService = CipherService();
-  final storageService = StorageService();
-  final dbService = DatabaseService();
-
-  // PAKAI SERVICE BARU
-  final webrtcService = WebRTCService();
+class _HomeScreenState extends State<HomeScreen> {
+  final KeyManager keyManager = KeyManager();
+  final StorageService storageService = StorageService();
+  final DatabaseService dbService = DatabaseService();
+  final P2PService networkService =
+      P2PService(); // Ganti ke WebRTCService() jika pakai internet
 
   SimpleKeyPair? myIdentity;
-  List<MessageModel> chatHistory = [];
-  final textController = TextEditingController();
-
-  String? targetPublicKeyString;
-  String connectionStatus = "Offline"; // Status Jaringan
+  List<ContactModel> contacts = [];
+  String myAddress = "Loading...";
+  String status = "Offline";
 
   @override
   void initState() {
     super.initState();
-    _initializeSystem();
+    _initApp();
   }
 
-  Future<void> _initializeSystem() async {
+  Future<void> _initApp() async {
     await _loadIdentity();
-    await _loadChatHistory();
-
-    // Inisialisasi WebRTC jika identitas sudah ada
-    if (myIdentity != null) {
-      await _initWebRTC();
-    }
+    await _loadContacts();
+    await _startNetwork();
   }
 
-  Future<void> _initWebRTC() async {
-    final myPub = await keyManager.getPublicKeyString(myIdentity!);
+  Future<void> _loadIdentity() async {
+    // Di real app, kita load private key dari storage.
+    // Di prototype ini, kita generate baru atau load dummy.
+    // Agar konsisten, kita generate baru dulu setiap sesi untuk keamanan demo.
+    final keyPair = await keyManager.generateNewIdentity();
+    final pubStr = await keyManager.getPublicKeyString(keyPair);
 
-    // Hubungkan UI dengan status WebRTC
-    webrtcService.onConnectionState = (state) {
-      setState(() => connectionStatus = state);
-    };
+    setState(() {
+      myIdentity = keyPair;
+      myAddress = pubStr; // Ini format Base58
+    });
+  }
 
-    // Hubungkan UI dengan pesan masuk
-    webrtcService.onMessageReceived = (incomingData) async {
-      List<String> parts = incomingData.split("###");
-      String senderKey = parts.length == 2 ? parts[0] : "Unknown";
-      String content = parts.length == 2 ? parts[1] : incomingData;
+  Future<void> _loadContacts() async {
+    final list = await dbService.getAllContacts();
+    setState(() {
+      contacts = list;
+    });
+  }
 
+  Future<void> _startNetwork() async {
+    // Start Listening (Server Mode)
+    await networkService.startHosting(); // Atau .init() jika WebRTC
+
+    // Cek IP (Opsional, kalau pakai P2P LAN)
+    String ip = await networkService.getMyIP();
+
+    setState(() {
+      status = "Active ($ip)";
+    });
+
+    // Global Listener: Menangani pesan masuk untuk SEMUA chat
+    networkService.onMessageReceived = (packet) async {
+      // Format: KEY###CONTENT
+      List<String> parts = packet.split("###");
+      String senderKey = parts.length >= 2 ? parts[0] : "Unknown";
+      String content = parts.length >= 2 ? parts[1] : packet;
+
+      // Simpan ke Database
       final newMessage = MessageModel(
+        chatId: senderKey, // Masuk ke folder chat pengirim
         senderId: senderKey,
         content: content,
         timestamp: DateTime.now().millisecondsSinceEpoch,
@@ -130,245 +160,188 @@ class _CryptoLabScreenState extends State<CryptoLabScreen> {
       );
 
       await dbService.insertMessage(newMessage);
-      await _loadChatHistory();
+
+      // Notifikasi Getar
       HapticFeedback.mediumImpact();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text("📩 New message from ${senderKey.substring(0, 5)}..."),
+          backgroundColor: Colors.green));
     };
-
-    // Mulai Signaling
-    await webrtcService.init(myPub);
   }
 
-  Future<void> _loadIdentity() async {
-    // Logic restore identity bisa disini
-  }
-
-  Future<void> _loadChatHistory() async {
-    final msgs = await dbService.getAllMessages();
-    setState(() {
-      chatHistory = msgs;
-    });
-  }
-
-  Future<void> generateIdentity() async {
-    final keyPair = await keyManager.generateNewIdentity();
-    final pubKey = await keyManager.getPublicKeyString(keyPair);
-    await storageService.saveIdentity("dummy_priv", pubKey);
-    setState(() {
-      myIdentity = keyPair;
-    });
-
-    // Langsung nyalakan WebRTC setelah generate
-    await _initWebRTC();
-  }
-
-  Future<void> openConnectScreen() async {
+  // --- ADD CONTACT FLOW ---
+  Future<void> _openScanner() async {
     if (myIdentity == null) return;
-    final myPubString = await keyManager.getPublicKeyString(myIdentity!);
 
-    // Kirim Public Key sebagai 'myIP' karena di WebRTC, alamat kita adalah Public Key
-    final scannedData = await Navigator.push(
-      context,
-      MaterialPageRoute(
-          builder: (context) =>
-              ConnectScreen(myPublicKey: myPubString, myIP: myPubString)),
-    );
+    // Buka Scanner
+    final result = await Navigator.push(
+        context,
+        MaterialPageRoute(
+            builder: (context) =>
+                ConnectScreen(myPublicKey: myAddress, myIP: myAddress)));
 
-    if (scannedData != null && scannedData is String) {
-      // Format: "KEY###KEY" (Karena IP diganti Key) atau Cuma "KEY"
-      List<String> parts = scannedData.split("###");
-      String targetKey =
-          parts.length >= 2 ? parts[1] : scannedData; // Ambil bagian Key
+    if (result != null && result is String) {
+      // Parse Result: IP###KEY atau KEY
+      List<String> parts = result.split("###");
+      String targetKey = parts.length >= 2 ? parts[1] : result;
+      String targetIp = parts.length >= 2 ? parts[0] : "";
 
-      setState(() {
-        targetPublicKeyString = targetKey;
-      });
+      // Connect Jaringan
+      if (targetIp.isNotEmpty) {
+        networkService.connectToPeer(
+            targetIp); // Atau connectToPeer(targetKey) jika WebRTC
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text("Connecting...")));
+      }
 
-      // PANGGIL WEBRTC CONNECT
-      webrtcService.connectToPeer(targetKey);
+      // Tampilkan Dialog Simpan Kontak
+      _showSaveContactDialog(targetKey);
     }
   }
 
-  Future<void> sendMessage() async {
-    if (myIdentity == null || textController.text.isEmpty) return;
-    final plainText = textController.text;
+  Future<void> _showSaveContactDialog(String key) async {
+    // Cek duplikat
+    if (await dbService.getContact(key) != null) return;
 
-    // Enkripsi
-    PublicKey receiverKey;
-    if (targetPublicKeyString != null) {
-      receiverKey = await _strToPubKey(targetPublicKeyString!);
-    } else {
-      receiverKey = await myIdentity!.extractPublicKey();
-    }
-
-    final cipherBytes = await cipherService.encryptMessage(
-      plaintext: plainText,
-      senderKeyPair: myIdentity!,
-      receiverPublicKey: receiverKey,
-    );
-
-    String encryptedString = cipherBytes.toString();
-    String myPubString = await keyManager.getPublicKeyString(myIdentity!);
-    String packet = "$myPubString###$encryptedString";
-
-    // KIRIM LEWAT WEBRTC
-    webrtcService.sendMessage(packet);
-
-    final newMessage = MessageModel(
-      senderId: "Me",
-      content: encryptedString,
-      timestamp: DateTime.now().millisecondsSinceEpoch,
-      nonce: "auto",
-      isMe: true,
-    );
-
-    await dbService.insertMessage(newMessage);
-    textController.clear();
-    await _loadChatHistory();
+    String initials = "";
+    await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+              backgroundColor: const Color(0xFF222222),
+              title: const Text("New Contact",
+                  style: TextStyle(color: Colors.white)),
+              content: TextField(
+                autofocus: true,
+                maxLength: 2,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    color: Colors.greenAccent,
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold),
+                textCapitalization: TextCapitalization.characters,
+                decoration: const InputDecoration(
+                    hintText: "Initials (e.g. AB)",
+                    hintStyle: TextStyle(color: Colors.grey)),
+                onChanged: (v) => initials = v,
+              ),
+              actions: [
+                TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text("Cancel")),
+                TextButton(
+                    onPressed: () async {
+                      if (initials.isNotEmpty) {
+                        // Simpan Kontak Baru
+                        final newContact = ContactModel(
+                            pubKey: key,
+                            initials: initials.toUpperCase(),
+                            colorCode: Colors
+                                .primaries[
+                                    Random().nextInt(Colors.primaries.length)]
+                                .value);
+                        await dbService.saveContact(newContact);
+                        await _loadContacts(); // Refresh List
+                        Navigator.pop(context);
+                      }
+                    },
+                    child: const Text("SAVE",
+                        style: TextStyle(color: Colors.greenAccent))),
+              ],
+            ));
   }
 
-  Future<void> panicButton() async {
+  // --- HAPUS DATA ---
+  Future<void> _panic() async {
     await dbService.nukeDatabase();
-    await _loadChatHistory();
-    webrtcService.dispose(); // Matikan koneksi
-    setState(() {
-      connectionStatus = "Offline (Panic)";
-      targetPublicKeyString = null;
-    });
-  }
-
-// Helper Baru V2.0: Decode Wallet Address (Base58) ke Bytes
-  List<int> _decodeWalletAddress(String walletString) {
-    try {
-      // Kita panggil fungsi helper yang sudah kita buat di KeyManager tadi
-      // Atau panggil langsung dari bs58 kalau mau import di sini.
-      // Supaya rapi, kita pakai instance keyManager:
-      return keyManager.decodeWalletAddress(walletString);
-    } catch (e) {
-      print("Error decoding address: $e");
-      return [];
-    }
-  }
-
-  Future<PublicKey> _strToPubKey(String str) async {
-    List<int> bytes = _decodeWalletAddress(str);
-    return SimplePublicKey(bytes, type: KeyPairType.x25519);
-  }
-
-  @override
-  void dispose() {
-    webrtcService.dispose();
-    super.dispose();
+    await _loadContacts();
+    networkService.dispose();
+    setState(() => status = "Panic: Data Wiped");
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF121212),
+      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text("SilentMesh Global", style: TextStyle(fontSize: 16)),
-            // Tampilkan Status WebRTC
-            Text(connectionStatus,
-                style: TextStyle(
-                    fontSize: 10,
-                    color: connectionStatus.contains("READY")
-                        ? Colors.greenAccent
-                        : Colors.orangeAccent)),
-          ],
-        ),
-        backgroundColor: Colors.black,
+        backgroundColor: const Color(0xFF1F1F1F),
+        title: const Text("SilentMesh",
+            style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
-          IconButton(
-              icon: const Icon(Icons.qr_code_scanner, color: Colors.blueAccent),
-              onPressed: openConnectScreen),
+          Center(
+              child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                      color: Colors.greenAccent.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(10)),
+                  child: Text(status,
+                      style: const TextStyle(
+                          fontSize: 10, color: Colors.greenAccent)))),
           IconButton(
               icon: const Icon(Icons.delete_forever, color: Colors.red),
-              onPressed: panicButton)
+              onPressed: _panic),
+          const SizedBox(width: 10),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: chatHistory.isEmpty
-                ? const Center(
-                    child: Text("No messages",
-                        style: TextStyle(color: Colors.grey)))
-                : ListView.builder(
-                    itemCount: chatHistory.length,
-                    itemBuilder: (context, index) {
-                      final msg = chatHistory[index];
-                      return FutureBuilder<String>(
-                        future: Future(() async {
-                          if (myIdentity == null) return "Locked";
-                          List<int> bytes = _decodeWalletAddress(msg.content);
-                          try {
-                            PublicKey senderKey;
-                            if (msg.isMe) {
-                              if (targetPublicKeyString != null) {
-                                senderKey =
-                                    await _strToPubKey(targetPublicKeyString!);
-                              } else {
-                                senderKey =
-                                    await myIdentity!.extractPublicKey();
-                              }
-                            } else {
-                              senderKey = await _strToPubKey(msg.senderId);
-                            }
-                            return await cipherService.decryptMessage(
-                              encryptedData: bytes,
-                              receiverKeyPair: myIdentity!,
-                              senderPublicKey: senderKey,
-                            );
-                          } catch (e) {
-                            return "Decryption Failed";
-                          }
-                        }),
-                        builder: (context, snapshot) {
-                          String text =
-                              snapshot.hasData ? snapshot.data! : "...";
-                          return Align(
-                            alignment: msg.isMe
-                                ? Alignment.centerRight
-                                : Alignment.centerLeft,
-                            child: Container(
-                                margin: const EdgeInsets.all(8),
-                                padding: const EdgeInsets.all(10),
-                                decoration: BoxDecoration(
-                                    color: msg.isMe
-                                        ? const Color(0xFF1F1F1F)
-                                        : Colors.green[900],
-                                    borderRadius: BorderRadius.circular(8)),
-                                child: Text(text,
-                                    style: const TextStyle(
-                                        color: Colors.white,
-                                        fontFamily: 'Courier'))),
-                          );
-                        },
-                      );
-                    }),
-          ),
-          Container(
-            padding: const EdgeInsets.all(10),
-            child: Row(children: [
-              Expanded(
-                  child: TextField(
-                      controller: textController,
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(
-                          hintText: "Type secure message...",
-                          hintStyle: TextStyle(color: Colors.grey),
-                          border: InputBorder.none))),
-              FloatingActionButton(
-                  mini: true,
-                  backgroundColor: Colors.greenAccent,
-                  onPressed:
-                      myIdentity == null ? generateIdentity : sendMessage,
-                  child: const Icon(Icons.send, color: Colors.black))
-            ]),
-          ),
-        ],
+      body: contacts.isEmpty
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.people_outline, size: 60, color: Colors.grey[800]),
+                  const SizedBox(height: 20),
+                  const Text("No Contacts Yet",
+                      style: TextStyle(color: Colors.grey)),
+                  const SizedBox(height: 10),
+                  const Text("Tap + to scan QR Code",
+                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+                ],
+              ),
+            )
+          : ListView.builder(
+              itemCount: contacts.length,
+              itemBuilder: (context, index) {
+                final contact = contacts[index];
+                return ListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  leading: CircleAvatar(
+                    radius: 24,
+                    backgroundColor: Color(contact.colorCode),
+                    child: Text(contact.initials,
+                        style: const TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.bold)),
+                  ),
+                  title: Text(contact.initials,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18)),
+                  subtitle: Text("${contact.pubKey.substring(0, 15)}...",
+                      style: TextStyle(
+                          color: Colors.grey[600],
+                          fontSize: 12,
+                          fontFamily: 'Courier')),
+                  trailing: const Icon(Icons.chevron_right, color: Colors.grey),
+                  onTap: () {
+                    // Buka Chat Room
+                    if (myIdentity != null) {
+                      Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => ChatScreen(
+                                  contact: contact,
+                                  myIdentity: myIdentity!,
+                                  p2pService: networkService)));
+                    }
+                  },
+                );
+              },
+            ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _openScanner,
+        backgroundColor: Colors.greenAccent,
+        child: const Icon(Icons.qr_code_scanner, color: Colors.black),
       ),
     );
   }
